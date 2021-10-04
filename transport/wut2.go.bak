@@ -1,0 +1,83 @@
+package transport
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"syscall"
+
+	reuseport "github.com/kavu/go_reuseport"
+	"go.uber.org/zap"
+)
+
+type Wut2 struct {
+	options Options
+
+	ln     net.Listener
+	lnAddr net.Addr
+	fd     int
+	f      *os.File
+
+	log   *zap.Logger
+	trace bool
+}
+
+func New(options Options) *Wut2 {
+	return &Wut2{
+		options: options,
+		trace:   options.Trace,
+		log:     options.Log,
+	}
+}
+
+func (w *Wut2) Start() (err error) {
+	addr := net.JoinHostPort("0.0.0.0", fmt.Sprintf("%d", w.options.Port))
+
+	w.ln, err = reuseport.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	w.lnAddr = w.ln.Addr()
+
+	if err = w.detach(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (w *Wut2) close() {
+	if w.fd != 0 {
+		syscall.Close(w.fd)
+	}
+
+	if w.f != nil {
+		w.f.Close()
+	}
+
+	if w.ln != nil {
+		w.ln.Close()
+	}
+}
+
+// detach takes the net listener and detaches it from it's parent
+// event loop, grabs the file descriptor, and makes it non-blocking.
+func (w *Wut2) detach() (err error) {
+	switch netln := w.ln.(type) {
+	case nil:
+		// Nope
+	case *net.TCPListener:
+		w.f, err = netln.File()
+	case *net.UnixListener:
+		// Also nope (but we could later)
+	}
+
+	if err != nil {
+		w.close()
+		return err
+	}
+
+	w.fd = int(w.f.Fd())
+	return syscall.SetNonblock(w.fd, true)
+}
